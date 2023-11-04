@@ -282,7 +282,7 @@ class kMaXDeepLabHead(Mask2FormerHead):
         binary_gt_sem_seg = F.one_hot(torch.cat(batch_gt_sem_seg, dim=0).to(torch.long), 
                                       num_classes=self.num_classes + 1).flatten(1, 2)     # (batch_size, hw, num_classes+1) 
         _panoptic_seg = ori_mask_preds.flatten(2)      # (batch_size, num_queries, hw)
-        class_weight = torch.einsum("bnl, blc -> bnc", _panoptic_seg, binary_gt_sem_seg.to(torch.float)) / (binary_gt_sem_seg.sum(1) + 1e-5)
+        class_weight = torch.einsum("bnl, blc -> bnc", _panoptic_seg, binary_gt_sem_seg.to(torch.float)) / (binary_gt_sem_seg.sum(1, keepdim=True) + 1e-5)
         labels = self.eta * class_weight + (1 - self.eta * class_weight) * one_hot_labels
         
         loss_cls = self.loss_cls.loss_weight * focal_cross_entropy_loss(cls_scores, labels, pq_loss_class_weight)
