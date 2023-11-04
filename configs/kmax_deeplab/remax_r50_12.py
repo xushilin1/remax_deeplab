@@ -156,14 +156,14 @@ val_evaluator = [
 ]
 test_evaluator = val_evaluator
 
-# optimizer
+## optimizer
 embed_multi = dict(lr_mult=1.0, decay_mult=0.0)
 optim_wrapper = dict(
     type='OptimWrapper',
     optimizer=dict(
         type='AdamW',
-        lr=0.0001,
-        weight_decay=0.05,
+        lr=0.0008,
+        weight_decay=0.03,
         eps=1e-8,
         betas=(0.9, 0.999)),
     paramwise_cfg=dict(
@@ -174,37 +174,39 @@ optim_wrapper = dict(
             'level_embed': embed_multi,
         },
         norm_decay_mult=0.0),
-    # clip_grad=dict(max_norm=0.01, norm_type=2)
-)
+    clip_grad=dict(max_norm=0.01, norm_type=2))
 
-param_scheduler = [
-    dict(
-        type='LinearLR', start_factor=0.001, by_epoch=False, begin=0, end=1000),
-    dict(
-        type='MultiStepLR',
-        begin=0,
-        end=12,
-        by_epoch=True,
-        milestones=[8, 11],
-        gamma=0.1)
-]
+# learning policy
+max_iters = 200000
+param_scheduler = dict(
+    type='MultiStepLR',
+    begin=0,
+    end=max_iters,
+    by_epoch=False,
+    milestones=[150000, 180000, 190000],
+    gamma=0.1)
 
-train_cfg = dict(type='EpochBasedTrainLoop', max_epochs=12, val_interval=1)
+interval = 5000
+dynamic_intervals = [(max_iters // interval * interval + 1, max_iters)]
+train_cfg = dict(
+    type='IterBasedTrainLoop',
+    max_iters=max_iters,
+    val_interval=interval,
+    dynamic_intervals=dynamic_intervals)
 val_cfg = dict(type='ValLoop')
 test_cfg = dict(type='TestLoop')
 
 default_hooks = dict(
     checkpoint=dict(
         type='CheckpointHook',
-        by_epoch=True,
+        by_epoch=False,
         save_last=True,
         max_keep_ckpts=3,
-        interval=1))
+        interval=interval))
+log_processor = dict(type='LogProcessor', window_size=50, by_epoch=False)
 
-auto_scale_lr = dict(enable=True, base_batch_size=16)
-
-custom_imports = dict(
-    imports=[
-        'projects.ReMaX',
-    ],
-    allow_failed_imports=False)
+# Default setting for scaling LR automatically
+#   - `enable` means enable scaling LR automatically
+#       or not by default.
+#   - `base_batch_size` = (8 GPUs) x (2 samples per GPU).
+auto_scale_lr = dict(enable=False, base_batch_size=16)
