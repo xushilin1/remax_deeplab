@@ -131,7 +131,7 @@ train_pipeline = [
 ]
 
 train_dataloader = dict(
-    batch_size=1,
+    batch_size=2,
     dataset=dict(
         ann_file='annotations/panoptic_train2017.json',
         pipeline=train_pipeline))
@@ -162,8 +162,8 @@ optim_wrapper = dict(
     type='OptimWrapper',
     optimizer=dict(
         type='AdamW',
-        lr=0.0008,
-        weight_decay=0.03,
+        lr=0.0002,
+        weight_decay=0.005,
         eps=1e-8,
         betas=(0.9, 0.999)),
     paramwise_cfg=dict(
@@ -176,14 +176,18 @@ optim_wrapper = dict(
         norm_decay_mult=0.0))
 
 # learning policy
-max_iters = 200000
-param_scheduler = dict(
-    type='MultiStepLR',
-    begin=0,
-    end=max_iters,
-    by_epoch=False,
-    milestones=[150000, 180000, 190000],
-    gamma=0.1)
+max_iters = 50000
+param_scheduler = [
+    dict(
+        type='LinearLR', start_factor=0.001, by_epoch=False, begin=0, end=5000),
+    dict(
+        type='MultiStepLR',
+        begin=0,
+        end=max_iters,
+        by_epoch=False,
+        milestones=[42500, 47500],
+        gamma=0.1)
+]
 
 interval = 5000
 dynamic_intervals = [(max_iters // interval * interval + 1, max_iters)]
@@ -208,4 +212,12 @@ log_processor = dict(type='LogProcessor', window_size=50, by_epoch=False)
 #   - `enable` means enable scaling LR automatically
 #       or not by default.
 #   - `base_batch_size` = (8 GPUs) x (2 samples per GPU).
-auto_scale_lr = dict(enable=False, base_batch_size=16)
+auto_scale_lr = dict(enable=True, base_batch_size=16)
+
+
+
+custom_imports = dict(
+    imports=[
+        'projects.ReMaX',
+    ],
+    allow_failed_imports=False)

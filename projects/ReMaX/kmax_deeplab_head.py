@@ -30,6 +30,7 @@ from .kmax_transformer import ASPP
 class kMaXDeepLabHead(Mask2FormerHead):
     def __init__(self,
                  remax=False,
+                 num_remax=4,
                  dec_layers: List[int] = [2, 2, 2],
                  in_channels: List[int] = [2048, 1024, 512, 256],
                  drop_path_prob: float = 0.2,
@@ -49,6 +50,7 @@ class kMaXDeepLabHead(Mask2FormerHead):
                  **kwargs) -> None:
         super(AnchorFreeHead, self).__init__(init_cfg=init_cfg)
         self.remax = remax
+        self.num_remax = num_remax
         self.num_things_classes = num_things_classes
         self.num_stuff_classes = num_stuff_classes
         self.num_classes = self.num_things_classes + self.num_stuff_classes
@@ -79,9 +81,12 @@ class kMaXDeepLabHead(Mask2FormerHead):
                         value_expansion=2,
                         drop_path_prob=drop_path_prob))
         if self.remax:
+            cur_idx = 0
             self._remax_sem_pred_layers = nn.ModuleList()
             for index, output_stride in enumerate([32, 16, 8]):
                 for _ in range(self._num_blocks[index]):
+                    if cur_idx == self.num_remax:
+                        break
                     self._remax_sem_pred_layers.append(
                         nn.Sequential(
                             ASPP(
@@ -90,6 +95,7 @@ class kMaXDeepLabHead(Mask2FormerHead):
                                 atrous_rates=[6,12,18]),
                             ConvBN(256, self.num_classes+1, kernel_size=1, norm=None, act=None)
                     ))
+                    cur_idx += 1
 
         self._class_embedding_projection = ConvBN(256, 256, kernel_size=1, bias=False, norm='syncbn', act='gelu',conv_type='1d')
         self._mask_embedding_projection = ConvBN(256, 256, kernel_size=1, bias=False, norm='syncbn', act='gelu', conv_type='1d')
@@ -151,9 +157,9 @@ class kMaXDeepLabHead(Mask2FormerHead):
                 gt_instances=batch_gt_instances[i],
                 img_meta=batch_img_metas[i])
             assign_result_list.append(assign_result)
-            pos_inds = torch.nonzero(assign_result.gt_inds > 0, as_tuple=False).squeeze(-1).unique()    # result of hungerian matching
+            pos_inds = torch.nonzero(assign_result.gt_inds > 0, as_tuple=False).squeeze(-1).unique()
             # neg_inds = torch.nonzero(assign_result.gt_inds == 0, as_tuple=False).squeeze(-1).unique()
-            pos_assigned_gt_inds = assign_result.gt_inds[pos_inds] - 1      # results of hungerian matching
+            pos_assigned_gt_inds = assign_result.gt_inds[pos_inds] - 1
             gt_inds_list.append(pos_assigned_gt_inds)
             pos_inds_list.append(pos_inds)
             src_inds_list.append(i * torch.ones_like(pos_inds))
@@ -244,6 +250,12 @@ class kMaXDeepLabHead(Mask2FormerHead):
                 decoder layer.
         """
 
+        ori_mask_preds = mask_preds.clone().sigmoid().detach()
+        if sem_preds is not None:
+            sem_preds_detach = sem_preds.sigmoid().detach()
+            sem_preds_detach = torch.einsum('bnc,bchw->bnhw', cls_scores.sigmoid().detach(), sem_preds_detach)
+            mask_preds = mask_preds + mask_preds * sem_preds_detach
+
         results = self.get_targets(cls_scores, mask_preds, pixel_feature,
                                    batch_gt_instances, batch_gt_sem_seg, batch_img_metas)
         labels, mask_targets, pq_loss_mask_weight, pq_loss_class_weight, pixel_gt_void_mask, inverse_gt_mask_area = results
@@ -269,8 +281,8 @@ class kMaXDeepLabHead(Mask2FormerHead):
         one_hot_labels = F.one_hot(labels.to(torch.long), num_classes=self.num_classes + 1)     # (batch_size, num_queries, num_classes+1)
         binary_gt_sem_seg = F.one_hot(torch.cat(batch_gt_sem_seg, dim=0).to(torch.long), 
                                       num_classes=self.num_classes + 1).flatten(1, 2)     # (batch_size, hw, num_classes+1) 
-        _panoptic_seg = mask_targets.sigmoid().flatten(-2, -1)      # (batch_size, num_queries, hw)
-        class_weight = torch.einsum("blc, bnl -> bnc", binary_gt_sem_seg.to(torch.float), _panoptic_seg) / (binary_gt_sem_seg.sum(1) + 1e-5)
+        _panoptic_seg = ori_mask_preds.flatten(2)      # (batch_size, num_queries, hw)
+        class_weight = torch.einsum("bnl, blc -> bnc", _panoptic_seg, binary_gt_sem_seg.to(torch.float)) / (binary_gt_sem_seg.sum(1) + 1e-5)
         labels = self.eta * class_weight + (1 - self.eta * class_weight) * one_hot_labels
         
         loss_cls = self.loss_cls.loss_weight * focal_cross_entropy_loss(cls_scores, labels, pq_loss_class_weight)
@@ -308,6 +320,9 @@ class kMaXDeepLabHead(Mask2FormerHead):
         panoptic_features, semantic_features, multi_scale_memorys = self.pixel_decoder(x)
         cluster_centers = self._cluster_centers.weight.unsqueeze(0).repeat(bs, 1, 1)    # B x C x L
         
+        tgt_size = panoptic_features.shape[-2:]
+        align_corners = (tgt_size[0] % 2 == 1)
+        
         cur_idx = 0
 
         pixel_feature_list = []
@@ -317,30 +332,29 @@ class kMaXDeepLabHead(Mask2FormerHead):
         for i, feat in enumerate(multi_scale_memorys):
             for _ in range(self._num_blocks[i]):
                 cluster_centers, prediction_result = self._kmax_transformer_layers[cur_idx](pixel_feature=feat, query_feature=cluster_centers)
-                tgt_size = panoptic_features.shape[-2:]
-                align_corners = (tgt_size[0] % 2 == 1)
-                mask_logits = F.interpolate(prediction_result['mask_logits'],
-                                            size=tgt_size,
-                                            mode="bilinear",
-                                            align_corners=align_corners)
+                mask_logits = prediction_result['mask_logits']
                 class_logits = prediction_result['class_logits']
-                pixel_feature = F.interpolate(
-                    prediction_result['pixel_feature'],
-                    size=tgt_size,
-                    mode="bilinear",
-                    align_corners=align_corners)
+                pixel_feature = prediction_result['pixel_feature']
                 
                 sem_seg_pred = None
-                if self.remax and self.training and i < 2:
+                if self.remax and self.training and cur_idx < self.num_remax:
                     sem_seg_pred = self._remax_sem_pred_layers[cur_idx](feat)
                     sem_seg_pred = F.interpolate(
                         sem_seg_pred,
                         size=tgt_size,
                         mode="bilinear",
                         align_corners=align_corners)    # (bs, num_classes, H, W)
-                    sem_preds_detach = sem_seg_pred.sigmoid().detach()
-                    sem_preds_detach = torch.einsum('bnc,bchw->bnhw', class_logits.sigmoid().detach(), sem_preds_detach)
-                    mask_logits = mask_logits + mask_logits * sem_preds_detach
+                
+                mask_logits = F.interpolate(mask_logits,
+                                            size=tgt_size,
+                                            mode="bilinear",
+                                            align_corners=align_corners)
+                
+                pixel_feature = F.interpolate(
+                    pixel_feature,
+                    size=tgt_size,
+                    mode="bilinear",
+                    align_corners=align_corners)
 
                 cls_pred_list.append(class_logits)
                 mask_pred_list.append(mask_logits)

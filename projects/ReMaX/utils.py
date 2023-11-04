@@ -138,6 +138,7 @@ def focal_cross_entropy_loss(
     weight: B x N
     """
     pred = pred.transpose(1, 2) # B x C x N
+    # gt = F.one_hot(gt, num_classes=pred.shape[1]).transpose(1, 2).to(pred) # B x C x N
     gt = gt.transpose(1, 2)
     loss = F.cross_entropy(pred, gt, reduction="none") # B x N
     if focal_loss_gamma == 0.0:
