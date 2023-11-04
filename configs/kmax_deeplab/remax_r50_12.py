@@ -173,8 +173,7 @@ optim_wrapper = dict(
             'query_feat': embed_multi,
             'level_embed': embed_multi,
         },
-        norm_decay_mult=0.0),
-    clip_grad=dict(max_norm=0.01, norm_type=2))
+        norm_decay_mult=0.0))
 
 # learning policy
 max_iters = 200000
