@@ -156,14 +156,14 @@ val_evaluator = [
 ]
 test_evaluator = val_evaluator
 
-## optimizer
+# optimizer
 embed_multi = dict(lr_mult=1.0, decay_mult=0.0)
 optim_wrapper = dict(
     type='OptimWrapper',
     optimizer=dict(
         type='AdamW',
-        lr=0.0002,
-        weight_decay=0.005,
+        lr=0.0001,
+        weight_decay=0.05,
         eps=1e-8,
         betas=(0.9, 0.999)),
     paramwise_cfg=dict(
